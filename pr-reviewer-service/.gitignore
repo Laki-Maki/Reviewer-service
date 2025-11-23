@@ -1,0 +1,22 @@
+# Binaries
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Test binary
+*.test
+
+# Output of the Go coverage tool
+*.out
+
+# Vendor directory
+/vendor/
+
+# Docker volumes
+postgres-data/
+
+# IDE / Editor
+.vscode/
+.idea/

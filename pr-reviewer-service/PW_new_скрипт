@@ -1,10 +1,23 @@
 # ==========================
-# PR Reviewer Service Test (Reassign BEFORE Merge)
+# PR Reviewer Service Test + DB Verification
 # ==========================
 
-# Заголовки для JSON
+# DB connection parameters
+$dbHost = "localhost"
+$dbPort = "5555"
+$dbName = "pr_review_new"
+$dbUser = "user"
+$dbPass = "pass"
+
+# Устанавливаем пароль для psql
+$env:PGPASSWORD = $dbPass
+
+# Headers for JSON API
 $headers = @{ "Content-Type" = "application/json" }
 
+# ==========================
+# Функции
+# ==========================
 function Invoke-WebRequestWithErrorHandling {
     param (
         [string]$Uri,
@@ -14,9 +27,9 @@ function Invoke-WebRequestWithErrorHandling {
     )
 
     $params = @{
-        Uri         = $Uri
-        Method      = $Method
-        Headers     = $Headers
+        Uri = $Uri
+        Method = $Method
+        Headers = $Headers
         ErrorAction = "SilentlyContinue"
     }
     if ($Body) { $params.Body = $Body }
@@ -24,123 +37,155 @@ function Invoke-WebRequestWithErrorHandling {
     $response = Invoke-WebRequest @params
     $statusCode = $response.StatusCode
     $content = $null
+
     if ($response.Content) {
-        $content = $response.Content | ConvertFrom-Json
+        try {
+            $content = $response.Content | ConvertFrom-Json
+        } catch {}
     }
 
-    Write-Host "`nStatus: $statusCode"
+    Write-Host "`n>>> HTTP $Method $Uri"
+    Write-Host "Status: $statusCode"
 
     if ($content -and $content.PSObject.Properties.Name -contains "error") {
-        Write-Host "❌ Error Code: $($content.error.code)"
-        Write-Host "❌ Error Message: $($content.error.message)"
+        Write-Host "❌ API ERROR:"
+        Write-Host "Error Code: $($content.error.code)"
+        Write-Host "Message: $($content.error.message)"
     } else {
-        Write-Host "Content:"
-        $content | ConvertTo-Json -Depth 6
+        Write-Host "Response:"
+        if ($content) { $content | ConvertTo-Json -Depth 6 }
     }
 
     return $content
 }
 
-# ==========================
-# 1. Добавление новой команды BetaTeam
-# ==========================
-Write-Host "=== Adding team 'BetaTeam' ==="
-
-$teamBody = '{
-    "team_name": "BetaTeam",
-    "members": [
-        {"user_id": 2001, "username": "Dave", "is_active": true},
-        {"user_id": 2002, "username": "Eve", "is_active": true},
-        {"user_id": 2003, "username": "Frank", "is_active": true}
-    ]
-}'
-
-Invoke-WebRequestWithErrorHandling `
-    -Uri http://localhost:8080/team/add `
-    -Method POST `
-    -Headers $headers `
-    -Body $teamBody
-
+function Exec-DbQuery {
+    param([string]$Query)
+    $cmd = "psql -h $dbHost -p $dbPort -U $dbUser -d $dbName -t -c `"$Query`""
+    return Invoke-Expression $cmd | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne "" }
+}
 
 # ==========================
-# 2. Создание PR
+# START TEST
 # ==========================
-Write-Host "`n=== Creating PR ==="
-
-$prBody = '{
-    "pull_request_name": "BetaFeature",
-    "author_id": 2001,
-    "team_id": 1
-}'
-
-$prJson = Invoke-WebRequestWithErrorHandling `
-    -Uri http://localhost:8080/pullRequest/create `
-    -Method POST `
-    -Headers $headers `
-    -Body $prBody
-
-$prId = $prJson.pr.id
-Write-Host "PR ID = $prId"
-
+Write-Host "=========================="
+Write-Host "  STARTING FULL TEST RUN"
+Write-Host "==========================`n"
 
 # ==========================
-# 3. Reassign reviewer (ДО merge!)
+# 1. Создание команды Dream_team_B3
 # ==========================
-Write-Host "`n=== Reassign reviewer BEFORE merge ==="
+$teamBodyObj = @{
+    team_name = "Dream_team_B3"
+    members = @(
+        @{ user_id = 6031; username = "user1"; is_active = $true },
+        @{ user_id = 6032; username = "user2"; is_active = $true },
+        @{ user_id = 6033; username = "user3"; is_active = $true },
+        @{ user_id = 6034; username = "user4"; is_active = $true },
+        @{ user_id = 6035; username = "user5"; is_active = $true }
+    )
+}
+$teamBody = $teamBodyObj | ConvertTo-Json -Compress
 
-$reassignBody = "{
-    `"pull_request_id`": $prId,
-    `"old_user_id`": 2002
-}"
+Write-Host "=== Creating Dream_team_B3 ==="
+Invoke-WebRequestWithErrorHandling -Uri http://localhost:8080/team/add -Method POST -Headers $headers -Body $teamBody
 
-Invoke-WebRequestWithErrorHandling `
-    -Uri http://localhost:8080/pullRequest/reassign `
-    -Method POST `
-    -Headers $headers `
-    -Body $reassignBody
+# ==========================
+# 2. Получаем team_id из БД напрямую
+# ==========================
+$teamId = [int](Exec-DbQuery "SELECT id FROM teams WHERE name='Dream_team_B3';")
+Write-Host "`nTeam ID = $teamId"
+
+# Проверка членов команды
+Write-Host "`n=== Team Members in DB ==="
+$teamMembers = Exec-DbQuery "SELECT tm.user_id, u.name AS username, u.is_active FROM team_members tm JOIN users u ON tm.user_id = u.id WHERE tm.team_id = $teamId ORDER BY tm.user_id;"
+$teamMembers | ForEach-Object { Write-Host $_ }
+
+# ==========================
+# 3. Создание PR
+# ==========================
+$prBodyObj = @{
+    pull_request_name = "DreamFeature"
+    author_id = 6031
+    team_id = $teamId
+}
+$prBody = $prBodyObj | ConvertTo-Json -Compress
+
+Write-Host "`n=== Creating Pull Request ==="
+$prJson = Invoke-WebRequestWithErrorHandling -Uri http://localhost:8080/pullRequest/create -Method POST -Headers $headers -Body $prBody
+
+# Приводим PR ID к числу
+if ($prJson -and $prJson.pr -and $prJson.pr.pull_request_id) {
+    $prId = $prJson.pr.pull_request_id
+    $prNumericId = [int]($prId -replace 'pr-','')
+    Write-Host "PR ID (numeric) = $prNumericId"
+} else {
+    Write-Host "PR creation failed!"
+    return
+}
+
+# ==========================
+# 4. Проверка назначенных ревьюверов
+# ==========================
+$assignedReviewers = Exec-DbQuery "SELECT reviewer_id FROM pr_reviewers WHERE pr_id = $prNumericId;"
+Write-Host "`nAssigned Reviewers for PR ${prNumericId}:"
+$assignedReviewers | ForEach-Object { Write-Host " - $_" }
 
 
 # ==========================
-# 4. Merge PR
+# 5. Assign Reviewer (пример)
 # ==========================
+if ($assignedReviewers.Count -gt 0) {
+    $oldReviewerId = [int]$assignedReviewers[0]
+    $bodyObject = @{
+        pull_request_id = $prNumericId
+        old_user_id     = $oldReviewerId
+    }
+    $assignBody = $bodyObject | ConvertTo-Json -Compress
+
+    Write-Host "`n=== Reassigning Reviewer ==="
+    Invoke-WebRequestWithErrorHandling -Uri http://localhost:8080/pullRequest/reassign -Method POST -Headers $headers -Body $assignBody
+}
+
+# ==========================
+# 4. Проверка назначенных ревьюверов
+# ==========================
+$assignedReviewers = Exec-DbQuery "SELECT reviewer_id FROM pr_reviewers WHERE pr_id = $prNumericId;"
+Write-Host "`nAssigned Reviewers for PR ${prNumericId}:"
+$assignedReviewers | ForEach-Object { Write-Host " - $_" }
+
+
+# ==========================
+# 6. Merge PR
+# ==========================
+$mergeBody = "{ `"pull_request_id`": $prNumericId }"
 Write-Host "`n=== Merging PR ==="
+Invoke-WebRequestWithErrorHandling -Uri http://localhost:8080/pullRequest/merge -Method POST -Headers $headers -Body $mergeBody
 
-$mergeBody = "{
-    `"pull_request_id`": $prId
-}"
-
-Invoke-WebRequestWithErrorHandling `
-    -Uri http://localhost:8080/pullRequest/merge `
-    -Method POST `
-    -Headers $headers `
-    -Body $mergeBody
-
+# DB check
+$prStatus = Exec-DbQuery "SELECT status FROM pull_requests WHERE id=$prNumericId;"
+Write-Host "`nPR Status: $prStatus"
 
 # ==========================
-# 5. SetIsActive
+# 7. Update user active status
 # ==========================
-Write-Host "`n=== Updating User Status ==="
-
 $updateUserBody = '{
-    "user_id": 2003,
+    "user_id": 6035,
     "is_active": false
 }'
+Write-Host "`n=== Updating user 6035 status ==="
+Invoke-WebRequestWithErrorHandling -Uri http://localhost:8080/users/setIsActive -Method POST -Headers $headers -Body $updateUserBody
 
-Invoke-WebRequestWithErrorHandling `
-    -Uri http://localhost:8080/users/setIsActive `
-    -Method POST `
-    -Headers $headers `
-    -Body $updateUserBody
-
+# DB check
+$userStatus = Exec-DbQuery "SELECT is_active FROM users WHERE id=6035;"
+Write-Host "`nUser 6035 is_active = $userStatus"
 
 # ==========================
-# 6. GetReview
+# 8. Get assigned PR list for reviewer
 # ==========================
-Write-Host "`n=== Getting assigned PRs for user 2002 ==="
+Write-Host "`n=== Getting assigned PRs for user 6032 ==="
+Invoke-WebRequestWithErrorHandling -Uri "http://localhost:8080/users/getReview?user_id=6032" -Method GET -Headers $headers
 
-Invoke-WebRequestWithErrorHandling `
-    -Uri "http://localhost:8080/users/getReview?user_id=2002" `
-    -Method GET `
-    -Headers $headers
-
-Write-Host "`n=== TEST COMPLETED ==="
+Write-Host "`n============================"
+Write-Host "        TEST COMPLETED"
+Write-Host "============================"

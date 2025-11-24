@@ -108,7 +108,6 @@ func (r *PRRepository) CreatePR(title string, authorID int, teamID int) (int, er
 		return 0, err
 	}
 
-
 	logger.Logger.Info("Created PR with reviewers",
 		zap.Int("pr_id", prID),
 		zap.Ints("reviewer_ids", selected),
@@ -205,7 +204,7 @@ func (r *PRRepository) ReassignReviewer(prID int, oldReviewerID int) (int, error
 	ctx := context.Background()
 	tx, err := r.db.BeginTx(ctx, &sql.TxOptions{})
 	if err != nil {
-		logger.Logger.Error("Failed to begin tx ReassignReviewer", zap.Error(err))
+		logger.Logger.Error("Failed to begin tx ReassignReviewer", zap.Error(err), zap.Int("pr_id", prID), zap.Int("old_reviewer_id", oldReviewerID))
 		return 0, err
 	}
 	defer func() {
@@ -215,48 +214,51 @@ func (r *PRRepository) ReassignReviewer(prID int, oldReviewerID int) (int, error
 		}
 	}()
 
-	// 1) Проверим status PR
+	logger.Logger.Info("Starting reassignment", zap.Int("pr_id", prID), zap.Int("old_reviewer_id", oldReviewerID))
+
+	// 1) Проверяем статус PR
 	var status string
 	err = tx.QueryRowContext(ctx, "SELECT status FROM pull_requests WHERE id=$1 FOR UPDATE", prID).Scan(&status)
 	if err != nil {
 		_ = tx.Rollback()
-		logger.Logger.Error("Failed to get PR status", zap.Error(err), zap.Int("pr_id", prID))
 		if errors.Is(err, sql.ErrNoRows) {
+			logger.Logger.Warn("PR not found", zap.Int("pr_id", prID))
 			return 0, fmt.Errorf("not found")
 		}
+		logger.Logger.Error("Failed to get PR status", zap.Error(err), zap.Int("pr_id", prID))
 		return 0, err
 	}
+	logger.Logger.Info("PR status retrieved", zap.Int("pr_id", prID), zap.String("status", status))
 	if status == "MERGED" {
 		_ = tx.Rollback()
+		logger.Logger.Warn("Cannot reassign reviewer: PR already merged", zap.Int("pr_id", prID))
 		return 0, fmt.Errorf("PR_MERGED: cannot reassign on merged PR")
 	}
 
-	// 2) Проверим, что oldReviewer назначен
+	// 2) Проверяем, что oldReviewer назначен
 	var exists int
 	err = tx.QueryRowContext(ctx, "SELECT 1 FROM pr_reviewers WHERE pr_id=$1 AND reviewer_id=$2", prID, oldReviewerID).Scan(&exists)
 	if err != nil {
+		_ = tx.Rollback()
 		if errors.Is(err, sql.ErrNoRows) {
-			_ = tx.Rollback()
+			logger.Logger.Warn("Old reviewer not assigned to PR", zap.Int("pr_id", prID), zap.Int("old_reviewer_id", oldReviewerID))
 			return 0, fmt.Errorf("NOT_ASSIGNED: reviewer is not assigned to this PR")
 		}
-		_ = tx.Rollback()
-		logger.Logger.Error("Failed to check existing reviewer", zap.Error(err))
+		logger.Logger.Error("Failed to check existing reviewer", zap.Error(err), zap.Int("pr_id", prID), zap.Int("old_reviewer_id", oldReviewerID))
 		return 0, err
 	}
+	logger.Logger.Info("Old reviewer confirmed assigned", zap.Int("pr_id", prID), zap.Int("old_reviewer_id", oldReviewerID))
 
-	// 3) Получаем teamID старого ревьювера
+	/// 3) Получаем teamID PR, а не пользователя
 	var teamID int
-	err = tx.QueryRowContext(ctx, "SELECT team_id FROM team_members WHERE user_id=$1 LIMIT 1", oldReviewerID).Scan(&teamID)
+	err = tx.QueryRowContext(ctx, "SELECT team_id FROM pull_requests WHERE id=$1", prID).Scan(&teamID)
 	if err != nil {
 		_ = tx.Rollback()
-		logger.Logger.Error("Failed to get team ID for old reviewer", zap.Error(err), zap.Int("old_reviewer_id", oldReviewerID))
-		if errors.Is(err, sql.ErrNoRows) {
-			return 0, fmt.Errorf("not found")
-		}
-		return 0, err
+		logger.Logger.Error("Failed to get team ID for PR", zap.Error(err), zap.Int("pr_id", prID))
+		return 0, fmt.Errorf("not found")
 	}
 
-	// 4) Выбор кандидата
+	// 4) Получаем список текущих ревьюеров PR для исключения
 	curRows, err := tx.QueryContext(ctx, "SELECT reviewer_id FROM pr_reviewers WHERE pr_id=$1", prID)
 	if err != nil {
 		_ = tx.Rollback()
@@ -274,7 +276,9 @@ func (r *PRRepository) ReassignReviewer(prID int, oldReviewerID int) (int, error
 		}
 		excludeMap[id] = struct{}{}
 	}
+	logger.Logger.Info("Current reviewers retrieved", zap.Int("pr_id", prID), zap.Int("exclude_count", len(excludeMap)))
 
+	// 5) Выбор кандидатов из той же команды
 	rows, err := tx.QueryContext(ctx, `
 		SELECT u.id
 		FROM users u
@@ -286,12 +290,14 @@ func (r *PRRepository) ReassignReviewer(prID int, oldReviewerID int) (int, error
 		logger.Logger.Error("Failed to query team candidates", zap.Error(err), zap.Int("team_id", teamID))
 		return 0, err
 	}
+	defer rows.Close()
+
 	var candidates []int
 	for rows.Next() {
 		var id int
 		if err := rows.Scan(&id); err != nil {
-			rows.Close()
 			_ = tx.Rollback()
+			logger.Logger.Error("Failed to scan candidate", zap.Error(err))
 			return 0, err
 		}
 		if _, excluded := excludeMap[id]; excluded {
@@ -299,14 +305,14 @@ func (r *PRRepository) ReassignReviewer(prID int, oldReviewerID int) (int, error
 		}
 		candidates = append(candidates, id)
 	}
-	rows.Close()
-
 	if len(candidates) == 0 {
 		_ = tx.Rollback()
+		logger.Logger.Warn("No active replacement candidates in team", zap.Int("team_id", teamID))
 		return 0, fmt.Errorf("NO_CANDIDATE: no active replacement candidate in team")
 	}
+	logger.Logger.Info("Candidates retrieved", zap.Int("team_id", teamID), zap.Int("candidate_count", len(candidates)))
 
-	// 4b) Выбираем кандидата с минимальной нагрузкой
+	// 6) Выбираем кандидата с минимальной нагрузкой
 	vals := ""
 	args := []interface{}{}
 	for i, cid := range candidates {
@@ -314,20 +320,21 @@ func (r *PRRepository) ReassignReviewer(prID int, oldReviewerID int) (int, error
 			vals += ","
 		}
 		args = append(args, cid)
-		vals += fmt.Sprintf("($%d)", i+1)
+		// Приводим к integer прямо в SQL
+		vals += fmt.Sprintf("($%d::int)", i+1)
 	}
 	query := fmt.Sprintf(`
-		WITH cands(id) AS (VALUES %s)
-		SELECT cands.id
-		FROM cands
-		LEFT JOIN (
-			SELECT reviewer_id, COUNT(*) as cnt
-			FROM pr_reviewers
-			GROUP BY reviewer_id
-		) r ON cands.id = r.reviewer_id
-		ORDER BY COALESCE(r.cnt,0) ASC, random()
-		LIMIT 1
-	`, vals)
+	WITH cands(id) AS (VALUES %s)
+	SELECT cands.id
+	FROM cands
+	LEFT JOIN (
+		SELECT reviewer_id, COUNT(*) as cnt
+		FROM pr_reviewers
+		GROUP BY reviewer_id
+	) r ON cands.id = r.reviewer_id
+	ORDER BY COALESCE(r.cnt,0) ASC, random()
+	LIMIT 1
+`, vals)
 
 	var newReviewerID int
 	err = tx.QueryRowContext(ctx, query, args...).Scan(&newReviewerID)
@@ -336,18 +343,19 @@ func (r *PRRepository) ReassignReviewer(prID int, oldReviewerID int) (int, error
 		logger.Logger.Error("Failed to select new reviewer", zap.Error(err))
 		return 0, err
 	}
+	logger.Logger.Info("New reviewer selected", zap.Int("pr_id", prID), zap.Int("new_reviewer_id", newReviewerID))
 
-	// 5) Заменяем old -> new
+	// 7) Заменяем old -> new
 	_, err = tx.ExecContext(ctx, "DELETE FROM pr_reviewers WHERE pr_id=$1 AND reviewer_id=$2", prID, oldReviewerID)
 	if err != nil {
 		_ = tx.Rollback()
-		logger.Logger.Error("Failed to delete old reviewer", zap.Error(err))
+		logger.Logger.Error("Failed to delete old reviewer", zap.Error(err), zap.Int("pr_id", prID), zap.Int("old_reviewer_id", oldReviewerID))
 		return 0, err
 	}
 	_, err = tx.ExecContext(ctx, "INSERT INTO pr_reviewers(pr_id, reviewer_id) VALUES($1,$2)", prID, newReviewerID)
 	if err != nil {
 		_ = tx.Rollback()
-		logger.Logger.Error("Failed to insert new reviewer", zap.Error(err))
+		logger.Logger.Error("Failed to insert new reviewer", zap.Error(err), zap.Int("pr_id", prID), zap.Int("new_reviewer_id", newReviewerID))
 		return 0, err
 	}
 
@@ -356,7 +364,7 @@ func (r *PRRepository) ReassignReviewer(prID int, oldReviewerID int) (int, error
 		return 0, err
 	}
 
-	logger.Logger.Info("Reassigned PR reviewer",
+	logger.Logger.Info("Successfully reassigned PR reviewer",
 		zap.Int("pr_id", prID),
 		zap.Int("old_reviewer_id", oldReviewerID),
 		zap.Int("new_reviewer_id", newReviewerID),

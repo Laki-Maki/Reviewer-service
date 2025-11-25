@@ -1,0 +1,145 @@
+# ==========================
+# PR Reviewer Service Test with DB Check
+# ==========================
+
+# Параметры подключения к БД
+$dbHost = "localhost"
+$dbPort = "5555"
+$dbName = "pr_review"
+$dbUser = "user"
+$dbPass = "pass"
+
+# Заголовки для JSON
+$headers = @{ "Content-Type" = "application/json" }
+
+
+# ==========================
+# 1. Добавление новой команды
+# ==========================
+$teamBody = '{
+    "team_name": "TeamTest",
+    "members": [
+        {"user_id": 1001, "username": "Alice", "is_active": true},
+        {"user_id": 1002, "username": "Bob", "is_active": true},
+        {"user_id": 1003, "username": "Charlie", "is_active": true}
+    ]
+}'
+
+Write-Host "=== Adding New Team ==="
+Invoke-WebRequest -Uri http://localhost:8080/team/add -Method POST -Headers $headers -Body $teamBody |
+    Select-Object StatusCode, Content | Format-List
+
+# Проверка в базе
+Write-Host "`n=== DB: Teams Table ==="
+psql "host=$dbHost port=$dbPort dbname=$dbName user=$dbUser password=$dbPass" `
+    -c "SELECT * FROM teams WHERE name='TeamTest';"
+
+Write-Host "`n=== DB: Team Members ==="
+psql "host=$dbHost port=$dbPort dbname=$dbName user=$dbUser password=$dbPass" `
+    -c "SELECT tm.*, u.username, u.is_active
+        FROM team_members tm
+        JOIN users u ON tm.user_id = u.id
+        WHERE tm.team_id = (SELECT id FROM teams WHERE name='TeamTest');"
+
+
+# ==========================
+# 2. Создание Pull Request
+# ==========================
+
+# Получаем team_id
+$teamId = psql "host=$dbHost port=$dbPort dbname=$dbName user=$dbUser password=$dbPass" `
+    -t -c "SELECT id FROM teams WHERE name='TeamTest' LIMIT 1;" | ForEach-Object { $_.Trim() }
+
+$prBody = "{
+    `"pull_request_name`": `"FeatureTest`",
+    `"author_id`": 1001,
+    `"team_id`": $teamId
+}"
+
+Write-Host "`n=== Creating Pull Request ==="
+$prResponse = Invoke-WebRequest -Uri http://localhost:8080/pullRequest/create -Method POST -Headers $headers -Body $prBody
+
+$prJson = $prResponse.Content | ConvertFrom-Json
+$prId = $prJson.pull_request_id
+
+Write-Host "PR created with ID = $prId"
+
+# Проверка в базе
+Write-Host "`n=== DB: Pull Requests ==="
+psql "host=$dbHost port=$dbPort dbname=$dbName user=$dbUser password=$dbPass" `
+    -c "SELECT * FROM pull_requests WHERE id = $prId;"
+
+
+# ==========================
+# 3. Assign Reviewer
+# ==========================
+$assignBody = "{
+    `"pull_request_id`": $prId
+}"
+
+Write-Host "`n=== Assigning Reviewer ==="
+Invoke-WebRequest -Uri http://localhost:8080/reviewer/assign -Method POST -Headers $headers -Body $assignBody |
+    Select-Object StatusCode, Content | Format-List
+
+Write-Host "`n=== DB: PR Reviewers ==="
+psql "host=$dbHost port=$dbPort dbname=$dbName user=$dbUser password=$dbPass" `
+    -c "SELECT pr.*, u.username
+        FROM pr_reviewers pr
+        JOIN users u ON pr.reviewer_id = u.id
+        WHERE pr.pr_id = $prId;"
+
+
+# ==========================
+# 4. Approve PR
+# ==========================
+$approveBody = "{
+    `"pull_request_id`": $prId
+}"
+
+Write-Host "`n=== Approving PR ==="
+Invoke-WebRequest -Uri http://localhost:8080/pullRequest/approve -Method POST -Headers $headers -Body $approveBody |
+    Select-Object StatusCode, Content | Format-List
+
+
+# ==========================
+# 5. Merge Pull Request
+# ==========================
+$mergeBody = "{
+    `"pull_request_id`": $prId
+}"
+
+Write-Host "`n=== Merging Pull Request ==="
+Invoke-WebRequest -Uri http://localhost:8080/pullRequest/merge -Method POST -Headers $headers -Body $mergeBody |
+    Select-Object StatusCode, Content | Format-List
+
+Write-Host "`n=== DB: Pull Requests After Merge ==="
+psql "host=$dbHost port=$dbPort dbname=$dbName user=$dbUser password=$dbPass" `
+    -c "SELECT * FROM pull_requests WHERE id = $prId;"
+
+
+# ==========================
+# 6. Обновление статуса пользователя
+# ==========================
+$updateUserBody = '{
+    "user_id": 1003,
+    "is_active": false
+}'
+
+Write-Host "`n=== Updating User Active Status ==="
+Invoke-WebRequest -Uri http://localhost:8080/users/setIsActive -Method POST -Headers $headers -Body $updateUserBody |
+    Select-Object StatusCode, Content | Format-List
+
+Write-Host "`n=== DB: Users ==="
+psql "host=$dbHost port=$dbPort dbname=$dbName user=$dbUser password=$dbPass" `
+    -c "SELECT id, name, is_active FROM users WHERE id = 1003;"
+
+
+
+# ==========================
+# 7. Получение assigned PRs для пользователя
+# ==========================
+Write-Host "`n=== Getting Assigned PRs for User 1002 ==="
+Invoke-WebRequest -Uri "http://localhost:8080/users/getReview?user_id=1002" -Method GET -Headers $headers |
+    Select-Object StatusCode, Content | Format-List
+
+Write-Host "`n=== Test Completed ==="

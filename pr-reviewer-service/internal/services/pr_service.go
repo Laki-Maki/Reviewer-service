@@ -1,11 +1,11 @@
 package services
 
 import (
-	"math/rand"
+
 	"pr-reviewer-service/internal/logger"
 	"pr-reviewer-service/internal/models"
 	"pr-reviewer-service/internal/repositories"
-	"time"
+
 
 	"go.uber.org/zap"
 )
@@ -21,35 +21,24 @@ func NewPRService(prRepo *repositories.PRRepository, userRepo *repositories.User
 }
 
 func (s *PRService) CreatePR(title string, authorID int, teamID int) (*models.PullRequest, error) {
-	logger.Logger.Info("Creating Pull Request", zap.String("title", title), zap.Int("author_id", authorID), zap.Int("team_id", teamID))
+    logger.Logger.Info("Creating Pull Request", zap.String("title", title), zap.Int("author_id", authorID), zap.Int("team_id", teamID))
 
-	prID, err := s.prRepo.CreatePR(title, authorID, teamID)
-	if err != nil {
-		logger.Logger.Error("Failed to create PR", zap.Error(err), zap.String("title", title), zap.Int("author_id", authorID))
-		return nil, err
-	}
+    prID, err := s.prRepo.CreatePR(title, authorID, teamID)
+    if err != nil {
+        logger.Logger.Error("Failed to create PR", zap.Error(err), zap.String("title", title), zap.Int("author_id", authorID))
+        return nil, err
+    }
 
-	candidates, err := s.prRepo.GetActiveTeamMembers(teamID, authorID)
-	if err != nil {
-		logger.Logger.Error("Failed to get active team members", zap.Error(err), zap.Int("team_id", teamID))
-		return nil, err
-	}
+    pr, err := s.prRepo.GetPR(prID)
+    if err != nil {
+        logger.Logger.Error("Failed to fetch PR", zap.Error(err), zap.Int("pr_id", prID))
+        return nil, err
+    }
 
-	rand.Seed(time.Now().UnixNano())
-	rand.Shuffle(len(candidates), func(i, j int) { candidates[i], candidates[j] = candidates[j], candidates[i] })
-
-	if len(candidates) > 2 {
-		candidates = candidates[:2]
-	}
-
-	if err := s.prRepo.AssignReviewers(prID, candidates); err != nil {
-		logger.Logger.Error("Failed to assign reviewers", zap.Error(err), zap.Int("pr_id", prID))
-		return nil, err
-	}
-
-	logger.Logger.Info("Successfully created PR with reviewers", zap.Int("pr_id", prID), zap.Ints("reviewer_ids", candidates))
-	return s.prRepo.GetPR(prID)
+    logger.Logger.Info("Successfully created PR with reviewers", zap.Int("pr_id", prID), zap.Ints("reviewer_ids", pr.AssignedReviewers))
+    return pr, nil
 }
+
 
 func (s *PRService) MergePR(prID int) (*models.PullRequest, error) {
 	logger.Logger.Info("Merging Pull Request", zap.Int("pr_id", prID))

@@ -1,16 +1,22 @@
 package main
 
 import (
+	"math/rand"
 	"net/http"
 	"pr-reviewer-service/internal/db"
 	"pr-reviewer-service/internal/handlers"
 	"pr-reviewer-service/internal/logger"
 	"pr-reviewer-service/internal/repositories"
 	"pr-reviewer-service/internal/services"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"go.uber.org/zap"
 )
+
+func init() {
+    rand.Seed(time.Now().UnixNano())
+}
 
 func main() {
 	// Инициализация логгера

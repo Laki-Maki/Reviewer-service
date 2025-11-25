@@ -1,17 +1,22 @@
 services:
   db:
     image: postgres:16
-    container_name: pr_review_db
+    container_name: pr_review_new_db
     restart: always
     environment:
       POSTGRES_USER: user
       POSTGRES_PASSWORD: pass
-      POSTGRES_DB: pr_review
+      POSTGRES_DB: pr_review_new
     ports:
       - '5555:5432'
     volumes:
-      - ./postgres-data:/var/lib/postgresql/data
+      - ./postgres-new-data:/var/lib/postgresql/data
       - ./internal/db/migrations:/docker-entrypoint-initdb.d
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U user -d pr_review_new"]
+      interval: 2s
+      timeout: 2s
+      retries: 15
 
   app:
     build: .
@@ -19,10 +24,11 @@ services:
     ports:
       - '8080:8080'
     depends_on:
-      - db
+      db:
+        condition: service_healthy
     environment:
       DB_HOST: db
       DB_PORT: 5432
       DB_USER: user
       DB_PASSWORD: pass
-      DB_NAME: pr_review
+      DB_NAME: pr_review_new

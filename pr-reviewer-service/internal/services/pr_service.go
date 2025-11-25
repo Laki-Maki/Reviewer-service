@@ -21,23 +21,26 @@ func NewPRService(prRepo *repositories.PRRepository, userRepo *repositories.User
 }
 
 func (s *PRService) CreatePR(title string, authorID int, teamID int) (*models.PullRequest, error) {
-    logger.Logger.Info("Creating Pull Request", zap.String("title", title), zap.Int("author_id", authorID), zap.Int("team_id", teamID))
+	logger.Logger.Info("Creating Pull Request", zap.String("title", title), zap.Int("author_id", authorID), zap.Int("team_id", teamID))
 
-    prID, err := s.prRepo.CreatePR(title, authorID, teamID)
-    if err != nil {
-        logger.Logger.Error("Failed to create PR", zap.Error(err), zap.String("title", title), zap.Int("author_id", authorID))
-        return nil, err
-    }
+	// 1. Создаём PR с ревьюверами через PRRepository
+	prID, err := s.prRepo.CreatePR(title, authorID, teamID)
+	if err != nil {
+		logger.Logger.Error("Failed to create PR", zap.Error(err), zap.String("title", title), zap.Int("author_id", authorID))
+		return nil, err
+	}
 
-    pr, err := s.prRepo.GetPR(prID)
-    if err != nil {
-        logger.Logger.Error("Failed to fetch PR", zap.Error(err), zap.Int("pr_id", prID))
-        return nil, err
-    }
+	// 2. Получаем полный объект PR
+	pr, err := s.prRepo.GetPR(prID)
+	if err != nil {
+		logger.Logger.Error("Failed to fetch PR after creation", zap.Error(err), zap.Int("pr_id", prID))
+		return nil, err
+	}
 
-    logger.Logger.Info("Successfully created PR with reviewers", zap.Int("pr_id", prID), zap.Ints("reviewer_ids", pr.AssignedReviewers))
-    return pr, nil
+	logger.Logger.Info("Successfully created PR with reviewers", zap.Int("pr_id", prID), zap.Ints("reviewer_ids", pr.AssignedReviewers))
+	return pr, nil
 }
+
 
 
 func (s *PRService) MergePR(prID int) (*models.PullRequest, error) {

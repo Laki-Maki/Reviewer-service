@@ -1,145 +1,146 @@
 # ==========================
-# PR Reviewer Service Test with DB Check
+# PR Reviewer Service Test (Reassign BEFORE Merge)
 # ==========================
-
-# Параметры подключения к БД
-$dbHost = "localhost"
-$dbPort = "5555"
-$dbName = "pr_review"
-$dbUser = "user"
-$dbPass = "pass"
 
 # Заголовки для JSON
 $headers = @{ "Content-Type" = "application/json" }
 
+function Invoke-WebRequestWithErrorHandling {
+    param (
+        [string]$Uri,
+        [string]$Method,
+        [hashtable]$Headers,
+        [string]$Body = $null
+    )
+
+    $params = @{
+        Uri         = $Uri
+        Method      = $Method
+        Headers     = $Headers
+        ErrorAction = "SilentlyContinue"
+    }
+    if ($Body) { $params.Body = $Body }
+
+    $response = Invoke-WebRequest @params
+    $statusCode = $response.StatusCode
+    $content = $null
+    if ($response.Content) {
+        $content = $response.Content | ConvertFrom-Json
+    }
+
+    Write-Host "`nStatus: $statusCode"
+
+    if ($content -and $content.PSObject.Properties.Name -contains "error") {
+        Write-Host "❌ Error Code: $($content.error.code)"
+        Write-Host "❌ Error Message: $($content.error.message)"
+    } else {
+        Write-Host "Content:"
+        $content | ConvertTo-Json -Depth 6
+    }
+
+    return $content
+}
 
 # ==========================
-# 1. Добавление новой команды
+# 1. Добавление новой команды BetaTeam
 # ==========================
+Write-Host "=== Adding team 'BetaTeam' ==="
+
 $teamBody = '{
-    "team_name": "TeamTest",
+    "team_name": "BetaTeam",
     "members": [
-        {"user_id": 1001, "username": "Alice", "is_active": true},
-        {"user_id": 1002, "username": "Bob", "is_active": true},
-        {"user_id": 1003, "username": "Charlie", "is_active": true}
+        {"user_id": 2001, "username": "Dave", "is_active": true},
+        {"user_id": 2002, "username": "Eve", "is_active": true},
+        {"user_id": 2003, "username": "Frank", "is_active": true}
     ]
 }'
 
-Write-Host "=== Adding New Team ==="
-Invoke-WebRequest -Uri http://localhost:8080/team/add -Method POST -Headers $headers -Body $teamBody |
-    Select-Object StatusCode, Content | Format-List
-
-# Проверка в базе
-Write-Host "`n=== DB: Teams Table ==="
-psql "host=$dbHost port=$dbPort dbname=$dbName user=$dbUser password=$dbPass" `
-    -c "SELECT * FROM teams WHERE name='TeamTest';"
-
-Write-Host "`n=== DB: Team Members ==="
-psql "host=$dbHost port=$dbPort dbname=$dbName user=$dbUser password=$dbPass" `
-    -c "SELECT tm.*, u.username, u.is_active
-        FROM team_members tm
-        JOIN users u ON tm.user_id = u.id
-        WHERE tm.team_id = (SELECT id FROM teams WHERE name='TeamTest');"
+Invoke-WebRequestWithErrorHandling `
+    -Uri http://localhost:8080/team/add `
+    -Method POST `
+    -Headers $headers `
+    -Body $teamBody
 
 
 # ==========================
-# 2. Создание Pull Request
+# 2. Создание PR
 # ==========================
+Write-Host "`n=== Creating PR ==="
 
-# Получаем team_id
-$teamId = psql "host=$dbHost port=$dbPort dbname=$dbName user=$dbUser password=$dbPass" `
-    -t -c "SELECT id FROM teams WHERE name='TeamTest' LIMIT 1;" | ForEach-Object { $_.Trim() }
+$prBody = '{
+    "pull_request_name": "BetaFeature",
+    "author_id": 2001,
+    "team_id": 1
+}'
 
-$prBody = "{
-    `"pull_request_name`": `"FeatureTest`",
-    `"author_id`": 1001,
-    `"team_id`": $teamId
+$prJson = Invoke-WebRequestWithErrorHandling `
+    -Uri http://localhost:8080/pullRequest/create `
+    -Method POST `
+    -Headers $headers `
+    -Body $prBody
+
+$prId = $prJson.pr.id
+Write-Host "PR ID = $prId"
+
+
+# ==========================
+# 3. Reassign reviewer (ДО merge!)
+# ==========================
+Write-Host "`n=== Reassign reviewer BEFORE merge ==="
+
+$reassignBody = "{
+    `"pull_request_id`": $prId,
+    `"old_user_id`": 2002
 }"
 
-Write-Host "`n=== Creating Pull Request ==="
-$prResponse = Invoke-WebRequest -Uri http://localhost:8080/pullRequest/create -Method POST -Headers $headers -Body $prBody
-
-$prJson = $prResponse.Content | ConvertFrom-Json
-$prId = $prJson.pull_request_id
-
-Write-Host "PR created with ID = $prId"
-
-# Проверка в базе
-Write-Host "`n=== DB: Pull Requests ==="
-psql "host=$dbHost port=$dbPort dbname=$dbName user=$dbUser password=$dbPass" `
-    -c "SELECT * FROM pull_requests WHERE id = $prId;"
+Invoke-WebRequestWithErrorHandling `
+    -Uri http://localhost:8080/pullRequest/reassign `
+    -Method POST `
+    -Headers $headers `
+    -Body $reassignBody
 
 
 # ==========================
-# 3. Assign Reviewer
+# 4. Merge PR
 # ==========================
-$assignBody = "{
-    `"pull_request_id`": $prId
-}"
+Write-Host "`n=== Merging PR ==="
 
-Write-Host "`n=== Assigning Reviewer ==="
-Invoke-WebRequest -Uri http://localhost:8080/reviewer/assign -Method POST -Headers $headers -Body $assignBody |
-    Select-Object StatusCode, Content | Format-List
-
-Write-Host "`n=== DB: PR Reviewers ==="
-psql "host=$dbHost port=$dbPort dbname=$dbName user=$dbUser password=$dbPass" `
-    -c "SELECT pr.*, u.username
-        FROM pr_reviewers pr
-        JOIN users u ON pr.reviewer_id = u.id
-        WHERE pr.pr_id = $prId;"
-
-
-# ==========================
-# 4. Approve PR
-# ==========================
-$approveBody = "{
-    `"pull_request_id`": $prId
-}"
-
-Write-Host "`n=== Approving PR ==="
-Invoke-WebRequest -Uri http://localhost:8080/pullRequest/approve -Method POST -Headers $headers -Body $approveBody |
-    Select-Object StatusCode, Content | Format-List
-
-
-# ==========================
-# 5. Merge Pull Request
-# ==========================
 $mergeBody = "{
     `"pull_request_id`": $prId
 }"
 
-Write-Host "`n=== Merging Pull Request ==="
-Invoke-WebRequest -Uri http://localhost:8080/pullRequest/merge -Method POST -Headers $headers -Body $mergeBody |
-    Select-Object StatusCode, Content | Format-List
-
-Write-Host "`n=== DB: Pull Requests After Merge ==="
-psql "host=$dbHost port=$dbPort dbname=$dbName user=$dbUser password=$dbPass" `
-    -c "SELECT * FROM pull_requests WHERE id = $prId;"
+Invoke-WebRequestWithErrorHandling `
+    -Uri http://localhost:8080/pullRequest/merge `
+    -Method POST `
+    -Headers $headers `
+    -Body $mergeBody
 
 
 # ==========================
-# 6. Обновление статуса пользователя
+# 5. SetIsActive
 # ==========================
+Write-Host "`n=== Updating User Status ==="
+
 $updateUserBody = '{
-    "user_id": 1003,
+    "user_id": 2003,
     "is_active": false
 }'
 
-Write-Host "`n=== Updating User Active Status ==="
-Invoke-WebRequest -Uri http://localhost:8080/users/setIsActive -Method POST -Headers $headers -Body $updateUserBody |
-    Select-Object StatusCode, Content | Format-List
-
-Write-Host "`n=== DB: Users ==="
-psql "host=$dbHost port=$dbPort dbname=$dbName user=$dbUser password=$dbPass" `
-    -c "SELECT id, name, is_active FROM users WHERE id = 1003;"
-
+Invoke-WebRequestWithErrorHandling `
+    -Uri http://localhost:8080/users/setIsActive `
+    -Method POST `
+    -Headers $headers `
+    -Body $updateUserBody
 
 
 # ==========================
-# 7. Получение assigned PRs для пользователя
+# 6. GetReview
 # ==========================
-Write-Host "`n=== Getting Assigned PRs for User 1002 ==="
-Invoke-WebRequest -Uri "http://localhost:8080/users/getReview?user_id=1002" -Method GET -Headers $headers |
-    Select-Object StatusCode, Content | Format-List
+Write-Host "`n=== Getting assigned PRs for user 2002 ==="
 
-Write-Host "`n=== Test Completed ==="
+Invoke-WebRequestWithErrorHandling `
+    -Uri "http://localhost:8080/users/getReview?user_id=2002" `
+    -Method GET `
+    -Headers $headers
+
+Write-Host "`n=== TEST COMPLETED ==="

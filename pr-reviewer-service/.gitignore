@@ -16,7 +16,14 @@
 
 # Docker volumes
 postgres-data/
+postgres-new_data/
 
 # IDE / Editor
 .vscode/
 .idea/
+
+# Environment variables
+.env
+.env.local
+
+

@@ -3,9 +3,9 @@ package db
 import (
 	"database/sql"
 	"fmt"
-	"os"
 	"time"
 
+	"pr-reviewer-service/config"
 	"pr-reviewer-service/internal/logger"
 
 	_ "github.com/lib/pq"
@@ -16,15 +16,15 @@ type DB struct {
 	Conn *sql.DB
 }
 
-func New() (*DB, error) {
-	// Формируем строку подключения из переменных окружения
+func New(cfg *config.Config) (*DB, error) {
+	// Формируем строку подключения из конфига
 	connStr := fmt.Sprintf(
-		"postgres://%s:%s@%s:%s/%s?sslmode=disable",
-		os.Getenv("DB_USER"),
-		os.Getenv("DB_PASSWORD"),
-		os.Getenv("DB_HOST"),
-		os.Getenv("DB_PORT"),
-		os.Getenv("DB_NAME"),
+		"postgres://%s:%s@%s:%d/%s?sslmode=disable",
+		cfg.DB.User,
+		cfg.DB.Password,
+		cfg.DB.Host,
+		cfg.DB.Port,
+		cfg.DB.Name,
 	)
 
 	db, err := sql.Open("postgres", connStr)

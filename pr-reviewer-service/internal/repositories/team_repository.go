@@ -17,16 +17,35 @@ func NewTeamRepository(db *sql.DB) *TeamRepository {
 }
 
 func (r *TeamRepository) CreateTeam(team *models.Team) error {
-	_, err := r.db.Exec("INSERT INTO teams(name) VALUES($1) ON CONFLICT(name) DO NOTHING", team.TeamName)
+	tx, err := r.db.Begin()
+	if err != nil {
+		logger.Logger.Error("Failed to begin transaction", zap.Error(err))
+		return err
+	}
+	defer func() {
+		if err != nil {
+			_ = tx.Rollback()
+		}
+	}()
+
+	// 1. Создаём команду
+	_, err = tx.Exec("INSERT INTO teams(name) VALUES($1) ON CONFLICT(name) DO NOTHING", team.TeamName)
 	if err != nil {
 		logger.Logger.Error("Failed to create team", zap.Error(err), zap.String("team_name", team.TeamName))
 		return err
 	}
 
-	logger.Logger.Info("Created team", zap.String("team_name", team.TeamName))
+	// Получаем team_id
+	var teamID int
+	err = tx.QueryRow("SELECT id FROM teams WHERE name=$1", team.TeamName).Scan(&teamID)
+	if err != nil {
+		logger.Logger.Error("Failed to get team_id", zap.Error(err), zap.String("team_name", team.TeamName))
+		return err
+	}
 
+	// 2. Создаём/обновляем пользователей и привязываем к команде
 	for _, member := range team.Members {
-		_, err := r.db.Exec(`
+		_, err = tx.Exec(`
 			INSERT INTO users(id,name,is_active) VALUES($1,$2,$3)
 			ON CONFLICT(id) DO UPDATE SET name=$2, is_active=$3`,
 			member.UserID, member.Username, member.IsActive,
@@ -36,20 +55,23 @@ func (r *TeamRepository) CreateTeam(team *models.Team) error {
 			return err
 		}
 
-		_, err = r.db.Exec(`
+		_, err = tx.Exec(`
 			INSERT INTO team_members(team_id,user_id)
-			SELECT t.id, $1 FROM teams t WHERE t.name=$2
-			ON CONFLICT DO NOTHING`,
-			member.UserID, team.TeamName,
+			VALUES($1,$2) ON CONFLICT DO NOTHING`,
+			teamID, member.UserID,
 		)
 		if err != nil {
 			logger.Logger.Error("Failed to assign user to team", zap.Error(err), zap.Int("user_id", member.UserID), zap.String("team_name", team.TeamName))
 			return err
 		}
-
-		logger.Logger.Info("Added member to team", zap.Int("user_id", member.UserID), zap.String("team_name", team.TeamName))
 	}
 
+	if err := tx.Commit(); err != nil {
+		logger.Logger.Error("Failed to commit CreateTeam transaction", zap.Error(err))
+		return err
+	}
+
+	logger.Logger.Info("Created team with members", zap.String("team_name", team.TeamName), zap.Int("members_count", len(team.Members)))
 	return nil
 }
 

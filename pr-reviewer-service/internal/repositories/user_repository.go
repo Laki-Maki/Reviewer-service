@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"pr-reviewer-service/internal/logger"
 	"pr-reviewer-service/internal/models"
+	"time"
 
 	"go.uber.org/zap"
 )
@@ -40,10 +41,13 @@ func (r *UserRepository) SetIsActive(userID int, isActive bool) (*models.User, e
 
 func (r *UserRepository) GetAssignedPRs(userID int) ([]models.PullRequest, error) {
 	rows, err := r.db.Query(`
-        SELECT pr.id, pr.title, pr.author_id, pr.status, pr.created_at, pr.merged_at
+        SELECT pr.id, pr.title, pr.author_id, pr.status, pr.created_at, pr.merged_at,
+               prr_all.reviewer_id
         FROM pull_requests pr
         JOIN pr_reviewers prr ON pr.id = prr.pr_id
+        LEFT JOIN pr_reviewers prr_all ON pr.id = prr_all.pr_id
         WHERE prr.reviewer_id = $1
+        ORDER BY pr.id
     `, userID)
 	if err != nil {
 		logger.Logger.Error("Failed to query assigned PRs", zap.Error(err), zap.Int("user_id", userID))
@@ -51,32 +55,47 @@ func (r *UserRepository) GetAssignedPRs(userID int) ([]models.PullRequest, error
 	}
 	defer rows.Close()
 
-	var prs []models.PullRequest
+	prMap := make(map[int]*models.PullRequest)
 	for rows.Next() {
-		var pr models.PullRequest
-		if err := rows.Scan(&pr.ID, &pr.Title, &pr.AuthorID, &pr.Status, &pr.CreatedAt, &pr.MergedAt); err != nil {
+		var prID, authorID, reviewerID sql.NullInt64
+		var title, status sql.NullString
+		var createdAt, mergedAt sql.NullTime
+
+		if err := rows.Scan(&prID, &title, &authorID, &status, &createdAt, &mergedAt, &reviewerID); err != nil {
 			logger.Logger.Error("Failed to scan assigned PR", zap.Error(err), zap.Int("user_id", userID))
 			return nil, err
 		}
 
-		// Получаем AssignedReviewers
-		revRows, err := r.db.Query("SELECT reviewer_id FROM pr_reviewers WHERE pr_id=$1", pr.ID)
-		if err != nil {
-			logger.Logger.Error("Failed to query reviewers for PR", zap.Error(err), zap.Int("pr_id", pr.ID))
-			return nil, err
-		}
-		for revRows.Next() {
-			var revID int
-			if err := revRows.Scan(&revID); err != nil {
-				revRows.Close()
-				logger.Logger.Error("Failed to scan reviewer ID", zap.Error(err), zap.Int("pr_id", pr.ID))
-				return nil, err
-			}
-			pr.AssignedReviewers = append(pr.AssignedReviewers, revID)
-		}
-		revRows.Close()
+		pid := int(prID.Int64)
+authorInt := int(authorID.Int64)
 
-		prs = append(prs, pr)
+var mergedPtr *time.Time
+if mergedAt.Valid {
+    mergedPtr = &mergedAt.Time
+}
+
+if _, exists := prMap[pid]; !exists {
+    prMap[pid] = &models.PullRequest{
+        ID:                pid,
+        Title:             title.String,
+        AuthorID:          authorInt,
+        Status:            status.String,
+        CreatedAt:         createdAt.Time,
+        MergedAt:          mergedPtr,
+        AssignedReviewers: []int{},
+    }
+}
+
+if reviewerID.Valid {
+    prMap[pid].AssignedReviewers = append(prMap[pid].AssignedReviewers, int(reviewerID.Int64))
+}
+
+
+	}
+
+	prs := make([]models.PullRequest, 0, len(prMap))
+	for _, pr := range prMap {
+		prs = append(prs, *pr)
 	}
 
 	logger.Logger.Info("Retrieved assigned PRs", zap.Int("user_id", userID), zap.Int("prs_count", len(prs)))

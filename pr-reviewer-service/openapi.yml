@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: PR Reviewer Assignment Service (Test Task, Fall 2025)
-  version: "1.0.0"
+  version: '1.0.0'
 
 tags:
   - name: Teams
@@ -51,7 +51,7 @@ components:
           message: resource not found
     TeamMember:
       type: object
-      required: [ user_id, username, is_active ]
+      required: [user_id, username, is_active]
       properties:
         user_id:
           type: string
@@ -61,7 +61,7 @@ components:
           type: boolean
     Team:
       type: object
-      required: [ team_name, members]
+      required: [team_name, members]
       properties:
         team_name:
           type: string
@@ -71,7 +71,7 @@ components:
             $ref: '#/components/schemas/TeamMember'
     User:
       type: object
-      required: [ user_id, username, team_name, is_active ]
+      required: [user_id, username, team_name, is_active]
       properties:
         user_id:
           type: string
@@ -83,7 +83,14 @@ components:
           type: boolean
     PullRequest:
       type: object
-      required: [ pull_request_id, pull_request_name, author_id, status, assigned_reviewers]
+      required:
+        [
+          pull_request_id,
+          pull_request_name,
+          author_id,
+          status,
+          assigned_reviewers,
+        ]
       properties:
         pull_request_id:
           type: string
@@ -109,7 +116,7 @@ components:
           nullable: true
     PullRequestShort:
       type: object
-      required: [ pull_request_id, pull_request_name, author_id, status]
+      required: [pull_request_id, pull_request_name, author_id, status]
       properties:
         pull_request_id:
           type: string
@@ -209,7 +216,7 @@ paths:
           application/json:
             schema:
               type: object
-              required: [ user_id, is_active ]
+              required: [user_id, is_active]
               properties:
                 user_id:
                   type: string
@@ -250,7 +257,7 @@ paths:
           application/json:
             schema:
               type: object
-              required: [ pull_request_id, pull_request_name, author_id ]
+              required: [pull_request_id, pull_request_name, author_id]
               properties:
                 pull_request_id: { type: string }
                 pull_request_name: { type: string }
@@ -299,7 +306,7 @@ paths:
           application/json:
             schema:
               type: object
-              required: [ pull_request_id ]
+              required: [pull_request_id]
               properties:
                 pull_request_id: { type: string }
             example:
@@ -338,7 +345,7 @@ paths:
           application/json:
             schema:
               type: object
-              required: [ pull_request_id, old_user_id ]
+              required: [pull_request_id, old_user_id]
               properties:
                 pull_request_id: { type: string }
                 old_user_id: { type: string }
@@ -381,15 +388,24 @@ paths:
                 merged:
                   summary: Нельзя менять после MERGED
                   value:
-                    error: { code: PR_MERGED, message: cannot reassign on merged PR }
+                    error:
+                      { code: PR_MERGED, message: cannot reassign on merged PR }
                 notAssigned:
                   summary: Пользователь не был назначен ревьювером
                   value:
-                    error: { code: NOT_ASSIGNED, message: reviewer is not assigned to this PR }
+                    error:
+                      {
+                        code: NOT_ASSIGNED,
+                        message: reviewer is not assigned to this PR,
+                      }
                 noCandidate:
                   summary: Нет доступных кандидатов
                   value:
-                    error: { code: NO_CANDIDATE, message: no active replacement candidate in team }
+                    error:
+                      {
+                        code: NO_CANDIDATE,
+                        message: no active replacement candidate in team,
+                      }
 
   /users/getReview:
     get:
@@ -404,7 +420,7 @@ paths:
             application/json:
               schema:
                 type: object
-                required: [ user_id, pull_requests ]
+                required: [user_id, pull_requests]
                 properties:
                   user_id:
                     type: string

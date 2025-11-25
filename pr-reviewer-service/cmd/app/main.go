@@ -1,57 +1,55 @@
 package main
 
 import (
-    "log"
-    "pr-reviewer-service/internal/db"
+	"net/http"
+	"pr-reviewer-service/internal/db"
+	"pr-reviewer-service/internal/handlers"
+	"pr-reviewer-service/internal/logger"
+	"pr-reviewer-service/internal/repositories"
+	"pr-reviewer-service/internal/services"
+
+	"github.com/go-chi/chi/v5"
+	"go.uber.org/zap"
 )
 
 func main() {
-    db, err := db.New()
-    if err != nil {
-        log.Fatal("❌ Database connection failed:", err)
-    }
-    defer db.Conn.Close()
+	// Инициализация логгера
+	logger.Init()
+	defer logger.Logger.Sync() // Сбрасываем буфер на случай использования асинхронного логирования
 
-    // Простой запрос чтобы проверить что таблицы создались
-    var teamCount int
-    err = db.Conn.QueryRow("SELECT COUNT(*) FROM teams").Scan(&teamCount)
-    if err != nil {
-        log.Fatal("❌ Query failed:", err)
-    }
+	logger.Logger.Info("Starting PR Reviewer Service...")
 
-    log.Printf("✅ Database is ready! Found %d teams", teamCount)
-    log.Println("🚀 Service started successfully!")
-    createTestPR(db)
-}
+	// Подключение к базе данных
+	database, err := db.New()
+	if err != nil {
+		logger.Logger.Fatal("Failed to connect to database", zap.Error(err))
+	}
+	defer database.Conn.Close()
+	logger.Logger.Info("Connected to PostgreSQL database successfully")
 
-func createTestPR(db *db.DB) {
-    // Создаём PR от Alice (id = 1) в команде Backend (id = 1)
-    var prID int
-    err := db.Conn.QueryRow(
-        "INSERT INTO pull_requests (title, author_id, team_id, status) VALUES ($1,$2,$3,'OPEN') RETURNING id",
-        "Test PR", 1, 1,
-    ).Scan(&prID)
-    if err != nil {
-        log.Fatal(err)
-    }
+	// Репозитории
+	teamRepo := repositories.NewTeamRepository(database.Conn)
+	userRepo := repositories.NewUserRepository(database.Conn)
+	prRepo := repositories.NewPRRepository(database.Conn)
+	logger.Logger.Info("Repositories initialized")
 
-    // Назначаем до 2 активных ревьюверов (исключаем автора)
-    rows, _ := db.Conn.Query("SELECT id FROM users u JOIN team_members tm ON u.id=tm.user_id WHERE tm.team_id=$1 AND u.is_active AND u.id<>$2", 1, 1)
-    reviewers := []int{}
-    for rows.Next() {
-        var id int
-        rows.Scan(&id)
-        reviewers = append(reviewers, id)
-    }
-    for i, r := range reviewers {
-        if i >= 2 {
-            break
-        }
-        _, err := db.Conn.Exec("INSERT INTO pr_reviewers (pr_id, reviewer_id) VALUES ($1,$2)", prID, r)
-        if err != nil {
-            log.Fatal(err)
-        }
-    }
+	// Сервисы
+	teamService := services.NewTeamService(teamRepo)
+	userService := services.NewUserService(userRepo, prRepo)
+	prService := services.NewPRService(prRepo, userRepo, teamRepo)
+	logger.Logger.Info("Services initialized")
 
-    log.Printf("PR #%d создан с ревьюверами: %v", prID, reviewers)
+	// Handlers и маршруты
+	r := chi.NewRouter()
+	handlers.RegisterTeamRoutes(r, teamService)
+	handlers.RegisterUserRoutes(r, userService)
+	handlers.RegisterPRRoutes(r, prService)
+	logger.Logger.Info("HTTP routes registered")
+
+	// Запуск сервера
+	addr := ":8080"
+	logger.Logger.Info("Starting HTTP server", zap.String("address", addr))
+	if err := http.ListenAndServe(addr, r); err != nil {
+		logger.Logger.Fatal("Server failed", zap.Error(err))
+	}
 }

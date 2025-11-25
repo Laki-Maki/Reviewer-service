@@ -20,8 +20,11 @@ CREATE TABLE pull_requests (
     title TEXT NOT NULL,
     author_id INT REFERENCES users(id),
     team_id INT REFERENCES teams(id),
-    status TEXT NOT NULL CHECK (status IN ('OPEN','MERGED'))
+    status TEXT NOT NULL CHECK (status IN ('OPEN','MERGED')),
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    merged_at TIMESTAMP
 );
+
 
 CREATE TABLE pr_reviewers (
     pr_id INT REFERENCES pull_requests(id) ON DELETE CASCADE,

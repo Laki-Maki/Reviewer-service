@@ -67,7 +67,7 @@ Invoke-WebRequestWithErrorHandling -Uri http://localhost:8080/team/add -Method P
 
 # ==========================
 # 2. Создание Pull Request
-# ==========================
+# ==========================вав
 $teamId = psql "host=$dbHost port=$dbPort dbname=$dbName user=$dbUser password=$dbPass" `
     -t -c "SELECT id FROM teams WHERE name='BetaTeam' LIMIT 1;" | ForEach-Object { $_.Trim() }
 
